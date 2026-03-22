@@ -1,0 +1,155 @@
+---
+title: "Classifying Human Activity from Wereable Accelerometer Data"
+author: "mbandi"
+date: "2026-03-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+This is the project for the Practical Machine Learning curse at Cursera. The objective is to use a subset from the Weight Lifting Exercises Dataset from [Qualitative Activity Recognition of Weight Lifting Exercises](https://web.archive.org/web/20170519033209/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) to categorize readings from different wearable sensors. Four sensors were used, at the users' globe, armband, lumbar belt and dumbell. Each participant was asked to repeat a movement in 5 different ways, one correct and 4 corresponding to common mistakes, resulting in the "classe" variable. Four models (decision tree, gradient boosting, support vector machine and random fores) will be trained and validated to find the most accurate in order to predict the test dataset. A recursive feature elimination will be used to find the most relevant variables to train the models.
+
+
+The original study aimed  to distinguish when an activity was realized correctly and when errors in the movement where made (hip position, limb movement, etc.). Usually, the human activity recognition studies with wearable sensors are focused in distinguishing between different types of activities (walking, running, sit ups, etc), and only a few try to detect variations in the same movement type to assert that the activity is being done properly. This could be particularly useful to remotely monitor elderly people or rehabilitation patients.
+
+The original source for the dataset and the related studies can be found in [Human Activity Recognition](https://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har)
+
+Links to the data used for this project can be found in:
+
+Training set: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+Testing set: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+### Loading the data
+
+```{r libaries, message=FALSE}
+library(dplyr)
+library(caret)
+```
+
+```{r download}
+trainingFile <- "pml-training.csv"
+testingFile <- "pml-testing.csv"
+if(!file.exists(trainingFile)) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", trainingFile)
+}
+if(!file.exists(testingFile)) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", testingFile)
+}
+```
+
+Read the data:
+```{r read}
+rawTrainData <- read.csv(trainingFile, na.strings = "")
+rawTestData <- read.csv(testingFile, na.strings = "")
+dim(rawTrainData)
+dim(rawTestData)
+```
+
+## Preprocessing the data
+
+Separate train in train and validation.
+
+```{r trainData}
+set.seed(44721)
+inTrain <- createDataPartition(rawTrainData$classe, p = .7, list = FALSE)
+trainData <- rawTrainData[inTrain, ]
+validationData <- rawTrainData[-inTrain, ]
+```
+
+The analysis will be done using only the sensors readings, and thus the user, time and windows columns are removed.
+It is also necessary to remove the NA and near zero value columns.  
+
+```{r clean data}
+trainData <- trainData %>% select_if(~ !any(is.na(.)))
+trainData <- trainData[, -nearZeroVar(trainData)]
+trainData <- trainData %>% select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, num_window))
+```
+
+
+5-fold cross validation will be used with the train control parameter.
+```{r crossValidation}
+controlCv <- trainControl(method = "cv", number = 5, verbose = FALSE)
+```
+
+To see the most relevant variables a simple recursive feature elimination is applied.
+```{r rfe, cache=TRUE}
+trainData$classe <- as.factor(trainData$classe)
+control <- rfeControl(functions = rfFuncs, method = "cv", number = 10)
+rfe_model <- rfe(trainData[,1:52], trainData$classe, sizes = c(1:15), rfeControl = control)
+trellis.par.set(caretTheme())
+plot(rfe_model, type = c("g", "o"))
+predictors(rfe_model)
+```
+  
+The top 6 variables will be used.
+
+## Models
+
+Train and validate each model with the selected variables and the 5-fold cross validation control.
+
+### Decision Tree
+```{r RPart, cache=TRUE}
+rpModel <- train(classe ~ roll_belt + yaw_belt + magnet_dumbbell_z + pitch_belt + magnet_dumbbell_y + pitch_forearm, data = trainData, method = "rpart", trControl = controlCv, tuneLength = 5)
+rpPred <- predict(rpModel, validationData)
+rpCmatrix <- confusionMatrix(rpPred, as.factor(validationData$classe))
+rpCmatrix
+```
+
+### Gradient Boosting 
+```{r gbm, cache=TRUE}
+gbmModel <- train(classe ~ roll_belt + yaw_belt + magnet_dumbbell_z + pitch_belt + magnet_dumbbell_y + pitch_forearm, data = trainData, method = "gbm", trControl = controlCv, tuneLength = 5, verbose = FALSE)
+gbmPred <- predict(gbmModel, validationData)
+gbmCmatrix <- confusionMatrix(gbmPred, as.factor(validationData$classe))
+gbmCmatrix
+```
+
+### Support Vector Machine
+```{r SVM, cache=TRUE}
+svmModel <- train(classe ~ roll_belt + yaw_belt + magnet_dumbbell_z + pitch_belt + magnet_dumbbell_y + pitch_forearm, data = trainData, method = "svmLinear", trControl = controlCv, tuneLength = 5, verbose = FALSE)
+svmPred <- predict(svmModel, validationData)
+svmCmatrix <- confusionMatrix(svmPred, as.factor(validationData$classe))
+svmCmatrix
+```
+
+### Random Forest
+```{r randomForest, cache=TRUE}
+rfModel <- train(classe ~ roll_belt + yaw_belt + magnet_dumbbell_z + pitch_belt + magnet_dumbbell_y + pitch_forearm, data = trainData, method = "rf", trControl = controlCv)
+rfPred <- predict(rfModel, validationData)
+rfCmatrix <- confusionMatrix(rfPred, as.factor(validationData$classe))
+rfCmatrix
+```
+
+
+### Model comparisson 
+```{r modelComp}
+results <- data.frame(Accuracy = c(rpCmatrix$overall[1], gbmCmatrix$overall[1], svmCmatrix$overall[1], rfCmatrix$overall[1]), Kappa = c(rpCmatrix$overall[2], gbmCmatrix$overall[2], svmCmatrix$overall[2], rfCmatrix$overall[2]))
+row.names(results) <- c("Decision Tree", "Gradient Boosting", "Support Vector Machine", "Random Forest")
+results
+```
+When dealing with multiclass classification, concordance is a common error measure. Caret already calculates the kappa value, and in this case the random forest is the model with both the highest accuracy (`r rfCmatrix$overall[1]`) and kappa (`r rfCmatrix$overall[2]`).
+
+## Prediction
+Prediction usin the random forest model.
+```{r prediction}
+rfTestPred <- predict(rfModel, rawTestData)
+print(rfTestPred)
+```
+
+## Appendix
+
+```{r rfImportance}
+importance <- varImp(rfModel, scale = FALSE)
+plot(importance)
+```
+This plot indicates that most of the information comes from the belt sensors.
+
+```{r n_trees}
+
+plot(rfModel$finalModel)
+```
+This plot show that generating around 100 trees would have been enough to achieve a similar performance, instead the 500 used.
